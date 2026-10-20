@@ -26,9 +26,10 @@ func (c *Client) FetchWorkouts(ctx context.Context, days int) ([]workout.Workout
 // resolved to its type-correct detail. This is the engine behind the `today`
 // command: the agent asks for "the workout(s) on this day" without knowing what
 // kind they were, and the tool discovers each session's type from the list (which
-// carries the authoritative numeric type alongside the trainingId — so dispatch
-// is collision-proof, unlike resolving from a bare id) and fetches the right
-// namespace. Returns a non-nil (possibly empty) slice so JSON encodes as [].
+// carries the authoritative numeric type AND course-category label alongside the
+// trainingId — so dispatch is collision-proof, unlike resolving from a bare id)
+// and fetches the right namespace directly, with no cross-namespace probing.
+// Returns a non-nil (possibly empty) slice so JSON encodes as [].
 func (c *Client) FetchDay(ctx context.Context, date time.Time) ([]workout.SessionDetail, error) {
 	y, m, d := date.Date()
 	day := time.Date(y, m, d, 0, 0, 0, 0, time.Local)
@@ -43,7 +44,7 @@ func (c *Client) FetchDay(ctx context.Context, date time.Time) ([]workout.Sessio
 		if dt := w.Date(); dt == nil || *dt != target {
 			continue
 		}
-		sd, err := c.ResolveSession(ctx, w.TrainingID, modeForType(w.SessionType))
+		sd, err := c.ResolveSession(ctx, w.TrainingID, modeForType(w.SessionType, w.WorkoutType))
 		if err != nil {
 			return nil, err
 		}
@@ -74,39 +75,63 @@ func (c *Client) fetchRecords(ctx context.Context, start, end time.Time) ([]work
 type DispatchMode int
 
 const (
-	// Auto probes the program namespace first, then falls back to free. It is the
-	// default for `session <id>` when the session type is unknown.
+	// Auto probes the program namespace first, then free, then official course.
+	// It is the default for `session <id>` when the session type is unknown.
 	Auto DispatchMode = iota
-	// FreeFirst probes free first, then program. Used when the list says the
-	// session is type 1, so the (rare) trainingId collision with a program of the
-	// same id is sidestepped — the free session is found before program is queried.
+	// FreeFirst probes free first, then program, then official course. Used when
+	// the list says the session is type 1, so the (rare) trainingId collision with
+	// a program of the same id is sidestepped — the free session is found before
+	// program is queried.
 	FreeFirst
 	// ProgramOnly consults only the program namespace and never falls back; it
-	// backs the --program override for an id valid in both namespaces.
+	// backs the --program override for an id valid in multiple namespaces.
 	ProgramOnly
 	// FreeOnly consults only the free namespace and never falls back; it backs the
-	// --free override for an id valid in both namespaces.
+	// --free override for an id valid in multiple namespaces.
 	FreeOnly
+	// CourseOnly consults only the official-course namespace and never falls
+	// back; it backs the --course override for an id valid in multiple
+	// namespaces.
+	CourseOnly
 )
 
-// modeForType picks a dispatch mode from the list's numeric session type. Type 5
-// is program-served, so probe program first; every other type (1 freestyle, 2/7
-// guided cardio/programs, and unknowns) is free-served, so probe free first —
-// efficient and collision-safe (a same-id program is never queried when the free
-// session has data). Either way the fallback still catches a misclassification.
-func modeForType(sessionType int) DispatchMode {
-	if sessionType == 5 {
-		return Auto // program-first, free fallback
+// modeForType picks a dispatch mode from the list record's session type and
+// course-category label (workoutType — "Sculpting", "Strength Training",
+// "Cardio", etc., or "" when absent). This routes straight to the one correct
+// namespace instead of probing several and trusting whichever answers first:
+// Speediance training IDs are not unique across the program/free/course tables,
+// so probing risks silently attaching an unrelated session's data to the wrong
+// id (confirmed in practice — a course-type id can coincidentally also exist as
+// an unrelated free-lift/rowing record). Type 5 is always program/Coach,
+// regardless of any category label. A non-empty category label with type != 5 is
+// always an official built-in course. Only a genuinely blank type AND no
+// category label — a true ad-hoc freestyle session, the one case with no
+// distinguishing signal — falls back to probing (free first, since that is the
+// overwhelmingly common real case; course/program are tried after only as a
+// last-resort safety net, not because they are expected to answer).
+func modeForType(sessionType int, workoutType string) DispatchMode {
+	switch {
+	case sessionType == 5:
+		return ProgramOnly
+	case workoutType != "":
+		return CourseOnly
+	default:
+		return FreeFirst
 	}
-	return FreeFirst // free-first, program fallback
 }
 
 // ResolveSession fetches one session's detail, autonomously selecting the right
-// Speediance namespace. Program detail lives at cttTrainingInfo[Detail]; free-lift
-// detail (incl. rowing/ski) lives at freeTraining[Detail]; and a trainingId can be
-// valid in BOTH namespaces as unrelated sessions, so the caller's mode disambiguates.
-// The result is the uniform, verbatim SessionDetail (info/detail carry whichever
-// namespace's raw payload answered; kind names it; both null when neither has data).
+// Speediance namespace. Program (custom template/Coach) detail lives at
+// cttTrainingInfo[Detail]; free-lift detail (incl. rowing/ski) lives at
+// freeTraining[Detail]; official built-in course detail (e.g. a guided program
+// selected on the machine, like "Back & Biceps Workout" or "Hip & Abs Core
+// Training") lives at courseTrainingInfo[Detail] — a third namespace the original
+// Python client supported (get_training_detail's 'course' branch) that this port
+// initially missed, leaving such sessions' detail as null even though the
+// endpoint works fine. A trainingId can be valid in more than one namespace as
+// unrelated sessions, so the caller's mode disambiguates. The result is the
+// uniform, verbatim SessionDetail (info/detail carry whichever namespace's raw
+// payload answered; kind names it; both null when none has data).
 func (c *Client) ResolveSession(ctx context.Context, trainingID int64, mode DispatchMode) (*workout.SessionDetail, error) {
 	id := strconv.FormatInt(trainingID, 10)
 	sd := &workout.SessionDetail{TrainingID: trainingID}
@@ -133,6 +158,17 @@ func (c *Client) ResolveSession(ctx context.Context, trainingID int64, mode Disp
 		}
 		return false, nil
 	}
+	tryCourse := func() (bool, error) {
+		info, detail, err := c.courseDetail(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if hasData(info) || hasData(detail) {
+			sd.Kind, sd.Info, sd.Detail = "course", info, detail
+			return true, nil
+		}
+		return false, nil
+	}
 
 	var err error
 	switch mode {
@@ -140,10 +176,18 @@ func (c *Client) ResolveSession(ctx context.Context, trainingID int64, mode Disp
 		_, err = tryProgram()
 	case FreeOnly:
 		_, err = tryFree()
+	case CourseOnly:
+		_, err = tryCourse()
 	case FreeFirst:
-		err = firstThen(tryFree, tryProgram)
-	default: // Auto / ProgramFirst
-		err = firstThen(tryProgram, tryFree)
+		// Only reached for a blind-guess id with no record (modeForType's
+		// freestyle fallback). Course before free: observed accounts have many
+		// more course sessions than genuine freestyle ones, and course ids have
+		// not been seen to collide with real free-lift data, whereas free ids
+		// have (a course-type id can coincidentally hit an unrelated free-lift
+		// record) — so checking course first is both more often right and safer.
+		err = firstOf(tryCourse, tryFree, tryProgram)
+	default: // Auto / ProgramFirst — also only reached for a blind-guess id.
+		err = firstOf(tryProgram, tryCourse, tryFree)
 	}
 	if err != nil {
 		return nil, err
@@ -151,14 +195,16 @@ func (c *Client) ResolveSession(ctx context.Context, trainingID int64, mode Disp
 	return sd, nil
 }
 
-// firstThen runs primary; if it found nothing (and didn't error), runs fallback.
-func firstThen(primary, fallback func() (bool, error)) error {
-	found, err := primary()
-	if err != nil || found {
-		return err
+// firstOf runs each candidate in order, stopping at the first that finds data
+// (or errors).
+func firstOf(candidates ...func() (bool, error)) error {
+	for _, try := range candidates {
+		found, err := try()
+		if err != nil || found {
+			return err
+		}
 	}
-	_, err = fallback()
-	return err
+	return nil
 }
 
 // programDetail fetches the program (Coach/template) namespace payloads verbatim.
@@ -173,6 +219,16 @@ func (c *Client) freeDetail(ctx context.Context, id string) (info, detail json.R
 	return c.pair(ctx,
 		"/app/trainingInfo/freeTraining/"+id,
 		"/app/trainingInfo/freeTrainingDetail/"+id)
+}
+
+// courseDetail fetches the official built-in course (guided program selected on
+// the machine) namespace payloads verbatim. This mirrors the Python client's
+// `get_training_detail(training_type='course')` branch, which this Go port had
+// not carried over.
+func (c *Client) courseDetail(ctx context.Context, id string) (info, detail json.RawMessage, err error) {
+	return c.pair(ctx,
+		"/app/trainingInfo/courseTrainingInfo/"+id,
+		"/app/trainingInfo/courseTrainingInfoDetail/"+id)
 }
 
 // pair GETs an info path and a detail path and returns their verbatim data

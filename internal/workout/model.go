@@ -105,18 +105,31 @@ func (r rawRecord) toWorkout() Workout {
 }
 
 // KindForType maps the raw numeric session `type` to the stable `kind` label the
-// CLI emits ("program" | "free" | ""). Observed across a year of real sessions:
-// type 5 is the program/Coach namespace (cttTrainingInfo[Detail]); every other
-// positive type — 1 (freestyle Free Lift), 2 (guided programs like
-// "Ultimate Sculpt & Burn"), 7 (guided cardio like "Aerobic Rowing") — is served
-// by the free namespace (freeTraining[Detail]). A non-positive/absent type yields
-// "". This is the digest hint used by `workouts`; `session`/`today` confirm the
-// kind by *which endpoint actually answered*, so they stay correct even if a
-// future type breaks this mapping.
-func KindForType(sessionType int) string {
+// CLI emits ("program" | "free" | "course" | ""). Observed across a year of real
+// sessions: type 5 is the program/Coach namespace (cttTrainingInfo[Detail]); a
+// record carrying a non-empty courseTypeStr/courseCategoryName (the record's
+// `type` field after WorkoutType resolution, e.g. "Sculpting", "Strength
+// Training", "Cardio") is a built-in course selected on the machine, served by
+// the official-course namespace (courseTrainingInfo[Detail]); everything else
+// positive (no category label) is a true ad-hoc freestyle session, served by the
+// free namespace (freeTraining[Detail]). A non-positive/absent type yields "".
+//
+// This distinction matters beyond labeling: Speediance training IDs are NOT
+// unique across the program/free/course tables, so an id can coincidentally
+// exist as an unrelated record in more than one namespace. Probing namespaces in
+// a fixed order and trusting "first one that answers" can silently attach the
+// wrong session's data — e.g. a course-type training id landing on an unrelated
+// free-lift/rowing record. Routing directly off the record's own category label
+// (this function, consulted wherever the caller already has the record — see
+// FetchDay) avoids that risk entirely; only a bare `session <id>` with no
+// surrounding record falls back to probing (see modeForType), and that probe
+// order deliberately tries course before free for exactly this reason.
+func KindForType(sessionType int, workoutType string) string {
 	switch {
 	case sessionType == 5:
 		return "program"
+	case workoutType != "":
+		return "course"
 	case sessionType >= 1:
 		return "free"
 	default:
@@ -145,9 +158,9 @@ func (w Workout) Date() *string {
 }
 
 // Summary is the workouts --json row (GOAL.md §9.2). `kind` ("program" | "free" |
-// "") is derived from the raw numeric session type so an agent can pick or filter
-// sessions without knowing the endpoint topology; `session <id>`/`today` use the
-// same vocabulary.
+// "course" | "") is derived from the record's session type and course-category
+// label (see KindForType) so an agent can pick or filter sessions without
+// knowing the endpoint topology; `session <id>`/`today` use the same vocabulary.
 type Summary struct {
 	TrainingID   int64       `json:"training_id"`
 	Title        string      `json:"title"`
@@ -169,7 +182,7 @@ func (w Workout) Summary() Summary {
 		Calories:     w.Calories,
 		Volume:       w.Volume,
 		Type:         w.WorkoutType,
-		Kind:         KindForType(w.SessionType),
+		Kind:         KindForType(w.SessionType, w.WorkoutType),
 	}
 }
 

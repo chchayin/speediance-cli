@@ -173,14 +173,32 @@ func TestSessionDetailIsVerbatimPassthrough(t *testing.T) {
 	}
 }
 
-// TestKindForType pins the digest type→kind mapping: 5 is program, every other
-// positive type (1 freestyle, 2 guided program, 7 guided cardio like Aerobic
-// Rowing) is the free namespace, and 0/absent is "".
+// TestKindForType pins the digest type→kind mapping: 5 is always program
+// regardless of any category label; a non-empty course-category label
+// (courseTypeStr/courseCategoryName, e.g. "Sculpting", "Cardio") with type != 5
+// is always the official-course namespace; a genuinely blank type AND no
+// category label is a true freestyle session ("free"); and 0/absent with no
+// label is "". This mapping is routed to directly (see modeForType) precisely
+// because Speediance training IDs collide across namespaces, so it must be
+// correct — not just a hint that a later probe can fix.
 func TestKindForType(t *testing.T) {
-	cases := map[int]string{5: "program", 1: "free", 2: "free", 7: "free", 0: "", -1: ""}
-	for typ, want := range cases {
-		if got := workout.KindForType(typ); got != want {
-			t.Errorf("KindForType(%d) = %q, want %q", typ, got, want)
+	cases := []struct {
+		sessionType int
+		workoutType string
+		want        string
+	}{
+		{5, "", "program"},
+		{5, "Sculpting", "program"}, // type 5 wins even if a label is present
+		{1, "", "free"},
+		{1, "Sculpting", "course"},
+		{2, "Strength Training", "course"},
+		{7, "Cardio", "course"},
+		{0, "", ""},
+		{-1, "", ""},
+	}
+	for _, c := range cases {
+		if got := workout.KindForType(c.sessionType, c.workoutType); got != c.want {
+			t.Errorf("KindForType(%d, %q) = %q, want %q", c.sessionType, c.workoutType, got, c.want)
 		}
 	}
 }
