@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stozo04/speediance-cli/internal/template"
+	"github.com/chchayin/speediance-cli/internal/template"
 )
 
 // newLibraryCmd implements `library [--search X] [--out FILE] [--json]`

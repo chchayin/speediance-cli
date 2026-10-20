@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/stozo04/speediance-cli/internal/workout"
+	"github.com/chchayin/speediance-cli/pkg/workout"
 )
 
 // newWorkoutsCmd implements `workouts [--days N] [--json]` (GOAL.md §9.2).

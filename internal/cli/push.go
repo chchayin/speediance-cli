@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stozo04/speediance-cli/internal/template"
+	"github.com/chchayin/speediance-cli/internal/template"
 )
 
 // newPushCmd implements `push <plan.json> [--dry-run] [--json]` (GOAL.md §9.5).

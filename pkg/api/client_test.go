@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stozo04/speediance-cli/internal/auth"
+	"github.com/chchayin/speediance-cli/internal/auth"
 )
 
 func testClient(baseURL string, tok auth.Token) *Client {

@@ -1,4 +1,4 @@
-module github.com/stozo04/speediance-cli
+module github.com/chchayin/speediance-cli
 
 go 1.24
 

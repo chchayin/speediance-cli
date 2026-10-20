@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stozo04/speediance-cli/internal/api"
-	"github.com/stozo04/speediance-cli/internal/workout"
+	"github.com/chchayin/speediance-cli/pkg/api"
+	"github.com/chchayin/speediance-cli/pkg/workout"
 )
 
 // newSessionCmd implements `session <training_id> [--json] [--free|--program|--course]`
