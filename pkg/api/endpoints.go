@@ -44,7 +44,7 @@ func (c *Client) FetchDay(ctx context.Context, date time.Time) ([]workout.Sessio
 		if dt := w.Date(); dt == nil || *dt != target {
 			continue
 		}
-		sd, err := c.ResolveSession(ctx, w.TrainingID, modeForType(w.SessionType, w.WorkoutType))
+		sd, err := c.ResolveSession(ctx, w.TrainingID, ModeForType(w.SessionType, w.WorkoutType))
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ const (
 	CourseOnly
 )
 
-// modeForType picks a dispatch mode from the list record's session type and
+// ModeForType picks a dispatch mode from the list record's session type and
 // course-category label (workoutType — "Sculpting", "Strength Training",
 // "Cardio", etc., or "" when absent). This routes straight to the one correct
 // namespace instead of probing several and trusting whichever answers first:
@@ -109,7 +109,7 @@ const (
 // distinguishing signal — falls back to probing (free first, since that is the
 // overwhelmingly common real case; course/program are tried after only as a
 // last-resort safety net, not because they are expected to answer).
-func modeForType(sessionType int, workoutType string) DispatchMode {
+func ModeForType(sessionType int, workoutType string) DispatchMode {
 	switch {
 	case sessionType == 5:
 		return ProgramOnly
@@ -179,7 +179,7 @@ func (c *Client) ResolveSession(ctx context.Context, trainingID int64, mode Disp
 	case CourseOnly:
 		_, err = tryCourse()
 	case FreeFirst:
-		// Only reached for a blind-guess id with no record (modeForType's
+		// Only reached for a blind-guess id with no record (ModeForType's
 		// freestyle fallback). Course before free: observed accounts have many
 		// more course sessions than genuine freestyle ones, and course ids have
 		// not been seen to collide with real free-lift data, whereas free ids
